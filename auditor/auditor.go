@@ -1,6 +1,5 @@
 package auditor
 
-// TODO: add panic/recover with example
 import (
 	"context"
 	"fmt"
@@ -14,7 +13,6 @@ type Valuable interface {
 }
 
 const (
-	observerId  = `audit_log`
 	flushPeriod = 2 * time.Second
 	flushMax    = 100
 
@@ -27,7 +25,7 @@ type Repository interface {
 	CreateMany(context.Context, []Valuable) (int, error)
 }
 
-func New(r Repository) *Auditor {
+func New(r Repository, ctx context.Context) *Auditor {
 	res := &Auditor{
 		repository: r,
 		flush:      make(chan int),
@@ -35,7 +33,7 @@ func New(r Repository) *Auditor {
 		ticker:     time.NewTicker(flushPeriod),
 	}
 
-	res.autoFlush()
+	res.autoFlush(ctx)
 
 	return res
 }
@@ -57,7 +55,7 @@ func (a *Auditor) isStopped() bool {
 	return a.stopped
 }
 
-func (a *Auditor) autoFlush() {
+func (a *Auditor) autoFlush(ctx context.Context) {
 	go func() { // init ticker
 		for {
 			select {
@@ -67,6 +65,7 @@ func (a *Auditor) autoFlush() {
 				}
 			case <-a.stop:
 				a.ticker.Stop()
+				fmt.Println(`Ticker stopped`)
 				return
 			}
 		}
@@ -78,8 +77,21 @@ func (a *Auditor) autoFlush() {
 			case tp := <-a.flush:
 				a.Flush(tp)
 			case <-a.stop:
+				fmt.Println(`Flusher stopped`)
 				return
 			}
+		}
+	}()
+
+	go func() { // init context listener
+		select {
+		case <-ctx.Done():
+			fmt.Println(`Context is Done`)
+			wg := &sync.WaitGroup{}
+			wg.Add(1)
+			a.Stop(wg)
+			wg.Wait()
+			return
 		}
 	}()
 }
@@ -95,7 +107,7 @@ func (a *Auditor) Flush(fType int) {
 
 	affected, err := a.repository.CreateMany(context.Background(), a._entities[0:entitiesLen])
 	if err != nil {
-		fmt.Errorf(`auditor didn't save events. Error: %s. Type: %s`, err, flushType(fType))
+		fmt.Printf(`auditor didn't save events. Error: %s. Type: %s`, err, flushType(fType))
 	} else {
 		log.Printf(`Auditor flush events. Num: %d. Type: %s.`, affected, flushType(fType))
 	}
@@ -109,6 +121,12 @@ func (a *Auditor) lastFlush() {
 }
 
 func (a *Auditor) Stop(wg *sync.WaitGroup) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Recovered in Stop function", r)
+		}
+	}()
+
 	close(a.stop)
 
 	a.mu.Lock()
@@ -122,9 +140,15 @@ func (a *Auditor) Stop(wg *sync.WaitGroup) {
 }
 
 func (a *Auditor) Update(subj any) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Recovered in Update function", r)
+		}
+	}()
+
 	ent, ok := subj.(Valuable)
 	if !ok {
-		fmt.Errorf(`subject for Auditor is not Valuable type: Actual type: %s`, fmt.Sprintf("%T", subj))
+		fmt.Printf(`subject for Auditor is not Valuable type: Actual type: %s`, fmt.Sprintf("%T", subj))
 	}
 
 	if a.isStopped() {
